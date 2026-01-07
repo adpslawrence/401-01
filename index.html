@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>極速衝刺 3D 競速遊戲</title>
+    <!-- 載入 Tailwind CSS 確保響應式設計和美觀 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 載入 Three.js 進行 3D 渲染 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        /* 設定背景和畫布 */
+        body {
+            background-color: #1a1a2e; /* 暗色背景 */
+            font-family: 'Inter', sans-serif;
+            color: #ffffff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            max-width: 95vw;
+            max-height: 80vh;
+        }
+        /* 隱藏預設畫布，直到 Three.js 初始化完成 */
+        #game-container {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* 讓點擊穿透到畫布 */
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container" class="relative">
+    <div id="ui-overlay" class="p-4 flex flex-col justify-between">
+        <div class="flex justify-between w-full items-center">
+            <!-- 排名顯示 -->
+            <div id="rank-display" class="bg-gray-700 text-white font-bold p-3 rounded-xl shadow-lg text-lg sm:text-2xl transition duration-300 transform hover:scale-105">
+                排名: ?
+            </div>
+            <!-- 分數與金幣 -->
+            <div id="score-display" class="bg-purple-800 text-white font-bold p-3 rounded-xl shadow-lg text-lg sm:text-2xl transition duration-300 transform hover:scale-105">
+                分數: 0
+            </div>
+            <div id="coin-display" class="bg-yellow-500 text-gray-900 font-bold p-3 rounded-xl shadow-lg text-lg sm:text-2xl transition duration-300 transform hover:scale-105">
+                金幣: 0
+            </div>
+        </div>
+    </div>
+    
+    <!-- 遊戲啟動/結束畫面 -->
+    <div id="start-screen" class="absolute inset-0 bg-gray-900 bg-opacity-90 flex flex-col items-center justify-center p-6 rounded-xl transition-opacity duration-500 z-20">
+        <h1 class="text-4xl sm:text-6xl font-extrabold text-white mb-4 tracking-wider">極速衝刺：AI 對決</h1>
+        <p id="instruction-text" class="text-xl sm:text-2xl text-purple-300 mb-8 text-center">
+            與 <span class="text-blue-400 font-bold">加速 AI 對手</span> 競速！<br/>
+            使用鍵盤方向鍵 ← → 控制車手換道。
+        </p>
+        <button id="start-button" class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-4 px-8 rounded-full shadow-lg text-2xl transition duration-300 transform hover:scale-110">
+            開始遊戲
+        </button>
+        <p id="ranking-message" class="text-xl text-yellow-400 mt-6 hidden"></p>
+        <div id="controls-display" class="mt-8 text-lg text-gray-400 text-center">
+            <p>控制方式:</p>
+            <div class="flex space-x-4 mt-2">
+                <span class="p-2 bg-gray-700 rounded-lg">←</span>
+                <span class="p-2 bg-gray-700 rounded-lg">→</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Three.js 渲染將在這裡進行 -->
+    <canvas id="game-canvas"></canvas>
+</div>
+
+<script>
+    // 全域變數
+    let scene, camera, renderer, clock;
+    let player; // 玩家車子 (粉色)
+    let aiPlayer; // AI 玩家車子 (藍色)
+    let obstacleSpeed = 0.5; // 跑道基礎速度
+    const trackWidth = 10;
+    const laneWidth = trackWidth / 3;
+    let currentLane = 1; // 玩家車道 0, 1, 2
+    let aiCurrentLane = 1; // AI 車道 (新增)
+    let isGameOver = false;
+    let score = 0;
+    let coinsCollected = 0;
+    let obstacles = [];
+    let coins = [];
+    let roadLines = []; // 用於跑道線
+    let gameTime = 0;
+
+    // AI 相關變數
+    let aiNextMoveTime = 0;
+    const aiDecisionInterval = 0.5; // AI 每 0.5 秒做一次決策
+    const aiSpeedFactor = 1.15; // AI 速度因子 (比玩家快 15%)
+
+    // DOM 元素
+    const canvas = document.getElementById('game-canvas');
+    const startScreen = document.getElementById('start-screen');
+    const startButton = document.getElementById('start-button');
+    const scoreDisplay = document.getElementById('score-display');
+    const coinDisplay = document.getElementById('coin-display');
+    const rankingMessage = document.getElementById('ranking-message');
+    const rankDisplay = document.getElementById('rank-display');
+
+    // --- 工具函數 ---
+    
+    const toRadians = (degrees) => degrees * (Math.PI / 180);
+
+    // --- 遊戲初始化與設置 ---
+
+    function initGame() {
+        // 確保遊戲狀態重置
+        isGameOver = false;
+        score = 0;
+        coinsCollected = 0;
+        obstacles = [];
+        coins = [];
+        roadLines = [];
+        currentLane = 1;
+        aiCurrentLane = Math.floor(Math.random() * 3); // AI 隨機初始車道
+        gameTime = 0;
+        obstacleSpeed = 0.5;
+        
+        if (renderer) {
+            // 清空場景中所有動態物件
+            scene.children.slice().forEach(child => {
+                 if (child.name !== 'track' && child.name !== 'wallLeft' && child.name !== 'wallRight' && child.type !== 'Light' && child.type !== 'PerspectiveCamera') {
+                    scene.remove(child);
+                 }
+            });
+            // 重新添加玩家和 AI 車輛（如果它們已經存在，則先移除）
+            let oldPlayer = scene.getObjectByName('player');
+            let oldAiPlayer = scene.getObjectByName('aiPlayer');
+            if(oldPlayer) scene.remove(oldPlayer);
+            if(oldAiPlayer) scene.remove(oldAiPlayer);
+
+        } else {
+            // 首次初始化 Three.js
+            clock = new THREE.Clock();
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0a0a0a); 
+
+            // 設置相機
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            // 設置渲染器
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            
+            // 設置光源
+            const ambientLight = new THREE.AmbientLight(0x404040, 3); scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+            directionalLight.position.set(0, 10, 50); scene.add(directionalLight);
+        }
+
+        // 設置畫布尺寸
+        const aspectRatio = 0.7; 
+        const width = Math.min(window.innerWidth * 0.9, 800);
+        const height = width / aspectRatio;
+        renderer.setSize(width, height);
+        
+        // 重新設置相機位置
+        camera.position.set(0, 8, 15);
+        camera.lookAt(0, 0, 0);
+
+
+        // 創建跑道 (如果不存在則創建)
+        if (!scene.getObjectByName('track')) {
+            const trackGeometry = new THREE.PlaneGeometry(trackWidth, 1000); 
+            const trackMaterial = new THREE.MeshLambertMaterial({ color: 0x111122, side: THREE.DoubleSide });
+            const track = new THREE.Mesh(trackGeometry, trackMaterial);
+            track.rotation.x = toRadians(-90); 
+            track.position.z = -490; 
+            track.name = 'track';
+            scene.add(track);
+
+            const sideWallMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
+            const wallGeometry = new THREE.PlaneGeometry(0.1, 1000); 
+            
+            const wallLeft = new THREE.Mesh(wallGeometry, sideWallMaterial);
+            wallLeft.rotation.x = toRadians(-90);
+            wallLeft.position.set(-trackWidth / 2, 0.05, -490);
+            wallLeft.name = 'wallLeft';
+            scene.add(wallLeft);
+            
+            const wallRight = new THREE.Mesh(wallGeometry, sideWallMaterial);
+            wallRight.rotation.x = toRadians(-90);
+            wallRight.position.set(trackWidth / 2, 0.05, -490);
+            wallRight.name = 'wallRight';
+            scene.add(wallRight);
+        }
+
+        // 創建跑道線 (重置陣列)
+        const lineMaterial = new THREE.MeshBasicMaterial({ color: 0xcccccc, emissive: 0xaaaaaa });
+        const centerLineGeometry = new THREE.BoxGeometry(0.2, 0.01, 3); 
+        const lineCount = 30; 
+        roadLines = []; 
+        for (let i = 0; i < lineCount; i++) {
+            const line = new THREE.Mesh(centerLineGeometry, lineMaterial);
+            line.position.set(0, 0.05, -i * 10 - 15);
+            line.rotation.x = toRadians(-90);
+            scene.add(line);
+            roadLines.push(line);
+        }
+
+
+        // --- 創建車手/車子 ---
+        const carWidth = laneWidth * 0.7;
+        const carHeight = 0.8;
+        const carDepth = 2.0;
+        const bodyGeometry = new THREE.BoxGeometry(carWidth, carHeight, carDepth);
+        const cabinGeometry = new THREE.BoxGeometry(carWidth * 0.5, carHeight * 0.6, carDepth * 0.6);
+        const cabinMaterial = new THREE.MeshLambertMaterial({ color: 0x333333, emissive: 0x000000, transparent: true, opacity: 0.8 });
+
+
+        // 1. 玩家車 (Player Car - 粉色)
+        player = new THREE.Group();
+        player.name = 'player';
+
+        const playerBodyMaterial = new THREE.MeshLambertMaterial({ color: 0xff44aa, emissive: 0x880055 });
+        player.add(new THREE.Mesh(bodyGeometry, playerBodyMaterial));
+        const playerCabin = new THREE.Mesh(cabinGeometry, cabinMaterial);
+        playerCabin.position.set(0, carHeight + 0.1, 0.3);
+        player.add(playerCabin);
+        player.position.set((currentLane - 1) * laneWidth, 1.5, 0); // 玩家固定在 Z=0
+        scene.add(player);
+
+
+        // 2. AI 車 (AI Car - 藍色)
+        aiPlayer = new THREE.Group();
+        aiPlayer.name = 'aiPlayer';
+
+        const aiBodyMaterial = new THREE.MeshLambertMaterial({ color: 0x00aaff, emissive: 0x004488 });
+        aiPlayer.add(new THREE.Mesh(bodyGeometry, aiBodyMaterial));
+        const aiCabin = new THREE.Mesh(cabinGeometry, cabinMaterial);
+        aiCabin.position.set(0, carHeight + 0.1, 0.3);
+        aiPlayer.add(aiCabin);
+
+        // AI 初始位置: 放在 Z 軸稍前方 (負值 Z)，確保可見
+        const initialAiX = (aiCurrentLane - 1) * laneWidth;
+        aiPlayer.position.set(initialAiX, 1.5, -5); // AI 初始領先 5 單位
+        scene.add(aiPlayer);
+
+        
+        // 綁定控制
+        bindControls();
+
+        // 顯示 UI
+        updateUI();
+
+        // 啟動動畫循環
+        if (!isGameOver) {
+            animate();
+        }
+    }
+
+    // --- 遊戲邏輯 ---
+
+    function movePlayer(direction) {
+        if (isGameOver) return;
+        
+        let newLane = currentLane;
+        
+        if (direction === 'left' && currentLane > 0) {
+            newLane--;
+        } else if (direction === 'right' && currentLane < 2) {
+            newLane++;
+        }
+        
+        if (newLane !== currentLane) {
+             currentLane = newLane;
+             const targetX = (currentLane - 1) * laneWidth; 
+             
+             // 1. Tween X position (換道平滑移動)
+             new TWEEN.Tween(player.position)
+                .to({ x: targetX }, 150) 
+                .easing(TWEEN.Easing.Quartic.Out)
+                .start();
+
+             // 2. Tween Z rotation (車身傾斜視覺回饋)
+             const rotationAmount = direction === 'left' ? toRadians(10) : toRadians(-10);
+             new TWEEN.Tween(player.rotation)
+                .to({ z: rotationAmount }, 75) 
+                .easing(TWEEN.Easing.Quadratic.Out)
+                .onComplete(() => {
+                    new TWEEN.Tween(player.rotation)
+                        .to({ z: 0 }, 75) 
+                        .easing(TWEEN.Easing.Quadratic.In)
+                        .start();
+                })
+                .start();
+        }
+    }
+
+    function bindControls() {
+        // 確保先移除，避免重複綁定
+        document.removeEventListener('keydown', handleKeyDown); 
+        document.addEventListener('keydown', handleKeyDown);
+    }
+    
+    function handleKeyDown(event) {
+        if (isGameOver) return;
+        // 阻止頁面捲動
+        if (event.key.startsWith('Arrow')) {
+            event.preventDefault();
+        }
+
+        switch (event.key) {
+            case 'ArrowLeft':
+                movePlayer('left');
+                break;
+            case 'ArrowRight':
+                movePlayer('right');
+                break;
+        }
+    }
+    
+    // --- AI 邏輯 ---
+
+    // 檢查指定車道在前方 lookAheadDistance 內是否有障礙物或金幣
+    function checkLaneForObjects(lane, lookAheadDistance) {
+        if (!aiPlayer) return { hasObstacle: false, hasCoin: false };
+        
+        const laneX = (lane - 1) * laneWidth;
+        const minZ = aiPlayer.position.z - lookAheadDistance;
+        const maxZ = aiPlayer.position.z;
+        let hasObstacle = false;
+        let hasCoin = false;
+
+        [...obstacles, ...coins].forEach(item => {
+            const inZRange = item.position.z < maxZ && item.position.z > minZ;
+            const inXRange = Math.abs(item.position.x - laneX) < laneWidth * 0.4;
+            
+            if (inZRange && inXRange) {
+                if (item.userData.type === 'obstacle') {
+                    hasObstacle = true;
+                } else if (item.userData.type === 'coin') {
+                    hasCoin = true;
+                }
+            }
+        });
+
+        return { hasObstacle, hasCoin };
+    }
+
+    function updateAI(delta) {
+        if (isGameOver || !aiPlayer) return;
+        
+        // V_world: 玩家的等效移動距離
+        const worldMovement = obstacleSpeed * 60 * delta; 
+        
+        // V_lead: AI 相較於玩家多出的移動距離 (AI_Factor - 1)
+        const leadGain = worldMovement * (aiSpeedFactor - 1); 
+        
+        // AI 領先玩家，Z 軸值減少 (往地平線移動)
+        aiPlayer.position.z -= leadGain; 
+        
+        // 2. 決策邏輯 (AI 嘗試躲避障礙物並收集金幣)
+        if (gameTime > aiNextMoveTime) {
+            aiNextMoveTime = gameTime + aiDecisionInterval;
+
+            const lookAhead = 25; 
+            
+            const currentLaneInfo = checkLaneForObjects(aiCurrentLane, lookAhead);
+            
+            // 優先：躲避障礙物
+            if (currentLaneInfo.hasObstacle) {
+                let targetLane = -1;
+
+                // 嘗試向左換道
+                if (aiCurrentLane > 0 && !checkLaneForObjects(aiCurrentLane - 1, lookAhead).hasObstacle) {
+                    targetLane = aiCurrentLane - 1;
+                } 
+                // 否則，嘗試向右換道
+                else if (aiCurrentLane < 2 && !checkLaneForObjects(aiCurrentLane + 1, lookAhead).hasObstacle) {
+                    targetLane = aiCurrentLane + 1;
+                }
+                
+                if (targetLane !== -1) {
+                    performAILaneChange(targetLane);
+                    return; 
+                }
+            } 
+            
+            // 次要：如果當前車道有金幣且沒有障礙物，保持當前車道
+            if (currentLaneInfo.hasCoin && !currentLaneInfo.hasObstacle) {
+                return;
+            }
+            
+            // 隨機換道/移動：如果沒有立即危險，隨機移動以模擬競速
+            if (Math.random() < 0.4) { 
+                let newLane = aiCurrentLane + (Math.random() < 0.5 ? -1 : 1);
+                newLane = Math.max(0, Math.min(2, newLane));
+                
+                // 確保新車道沒有立即的障礙物
+                if (newLane !== aiCurrentLane && !checkLaneForObjects(newLane, lookAhead).hasObstacle) {
+                    performAILaneChange(newLane);
+                }
+            }
+        }
+    }
+    
+    function performAILaneChange(targetLane) {
+        if (targetLane === aiCurrentLane) return;
+
+        const oldLane = aiCurrentLane;
+        aiCurrentLane = targetLane;
+        const targetX = (aiCurrentLane - 1) * laneWidth;
+
+        // 使用 TWEEN 讓 AI 換道看起來更平滑
+        new TWEEN.Tween(aiPlayer.position)
+            .to({ x: targetX }, 200) 
+            .easing(TWEEN.Easing.Quadratic.Out)
+            .start();
+        
+        // AI 車身傾斜視覺效果
+        const direction = targetLane < oldLane ? 'left' : 'right';
+        const rotationAmount = direction === 'left' ? toRadians(10) : toRadians(-10); 
+        
+        new TWEEN.Tween(aiPlayer.rotation)
+            .to({ z: rotationAmount }, 75) 
+            .easing(TWEEN.Easing.Quadratic.Out)
+            .onComplete(() => {
+                new TWEEN.Tween(aiPlayer.rotation)
+                    .to({ z: 0 }, 75) 
+                    .easing(TWEEN.Easing.Quadratic.In)
+                    .start();
+            })
+            .start();
+    }
+
+
+    // --- 物件生成 ---
+    
+    let obstacleTimer = 0;
+    const obstacleInterval = 50; 
+
+    function spawnObstacleOrCoin() {
+        obstacleTimer++;
+        if (obstacleTimer % obstacleInterval !== 0) return;
+
+        const isObstacle = Math.random() < 0.7; // 70% 障礙物
+        const lane = Math.floor(Math.random() * 3); 
+        const xPos = (lane - 1) * laneWidth;
+        const zPos = -100; 
+
+        if (isObstacle) {
+            // 障礙物: 怪獸 (Obstacle)
+            const obsGeometry = new THREE.BoxGeometry(laneWidth * 0.7, 3, 3);
+            const obsMaterial = new THREE.MeshLambertMaterial({ color: 0xff0000, emissive: 0x880000 });
+            const obstacle = new THREE.Mesh(obsGeometry, obsMaterial);
+            obstacle.position.set(xPos, 1.5, zPos);
+            obstacle.name = 'obstacle';
+            obstacle.userData = { type: 'obstacle' };
+            scene.add(obstacle);
+            obstacles.push(obstacle);
+        } else {
+            // 金幣 (Coin)
+            const coinGeometry = new THREE.CylinderGeometry(1, 1, 0.2, 16);
+            const coinMaterial = new THREE.MeshPhongMaterial({ color: 0xffd700, shininess: 100 });
+            const coin = new THREE.Mesh(coinGeometry, coinMaterial);
+            coin.rotation.x = toRadians(90); 
+            coin.position.set(xPos, 2, zPos);
+            coin.name = 'coin';
+            coin.userData = { type: 'coin' };
+            scene.add(coin);
+            coins.push(coin);
+        }
+    }
+
+    // --- 遊戲循環 ---
+    function animate() {
+        if (isGameOver) return;
+
+        requestAnimationFrame(animate);
+
+        const delta = clock.getDelta(); 
+        gameTime += delta;
+
+        // 速度遞增 (遊戲難度增加)
+        obstacleSpeed += delta * 0.005; 
+        
+        const moveDistance = obstacleSpeed * 60 * delta; // 基礎世界移動量
+
+        // 1. 移動跑道線
+        const lineRecycleDepth = -roadLines[roadLines.length - 1].position.z + 10;
+        roadLines.forEach(line => {
+            line.position.z += moveDistance;
+            if (line.position.z > 15) {
+                line.position.z -= lineRecycleDepth * roadLines.length; 
+            }
+        });
+
+
+        // 2. 移動障礙物、金幣 和 AI 車 <-- 關鍵修正：將 AI 納入世界移動中
+        if (aiPlayer) {
+            aiPlayer.position.z += moveDistance;
+        }
+        
+        [...obstacles, ...coins].forEach(item => {
+            item.position.z += moveDistance;
+        });
+        
+        // 刪除超出視野的物件
+        obstacles = obstacles.filter(o => o.position.z < 15);
+        coins = coins.filter(c => c.position.z < 15);
+        
+        // 旋轉金幣
+        coins.forEach(coin => {
+            coin.rotation.y += 0.05;
+        });
+
+        // 3. 更新 AI 邏輯和位置 (只處理相對於玩家的追趕/拉開距離)
+        updateAI(delta);
+
+        // 4. 碰撞檢測
+        checkCollisions();
+        
+        // 5. 生成新的障礙物/金幣
+        spawnObstacleOrCoin();
+
+        // 6. 更新分數
+        score += delta * 10 * obstacleSpeed;
+        
+        // 7. 更新 UI (包括排名)
+        updateUI();
+        
+        // 8. 渲染場景
+        TWEEN.update(); 
+        renderer.render(scene, camera);
+    }
+
+    // --- 碰撞檢測 ---
+
+    function checkCollisions() {
+        // 1. 檢查與障礙物的碰撞 (Game Over)
+        for (let i = 0; i < obstacles.length; i++) {
+            const obstacle = obstacles[i];
+            
+            // 玩家碰撞
+            if (Math.abs(obstacle.position.z - player.position.z) < 2.5) { 
+                if (Math.abs(obstacle.position.x - player.position.x) < laneWidth * 0.4) {
+                    gameOver();
+                    return;
+                }
+            }
+            
+            // AI 碰撞 (AI 撞到障礙物時速度減慢，但不會遊戲結束)
+            if (Math.abs(obstacle.position.z - aiPlayer.position.z) < 2.5) { 
+                if (Math.abs(obstacle.position.x - aiPlayer.position.x) < laneWidth * 0.4) {
+                    // AI 撞上障礙物，速度降回基礎速度
+                    obstacleSpeed = Math.max(0.5, obstacleSpeed - 0.2); 
+                    scene.remove(obstacle);
+                    obstacles.splice(i, 1);
+                    i--; // 由於刪除了一個元素，需要調整索引
+                    continue;
+                }
+            }
+        }
+
+        // 2. 檢查與金幣的碰撞 (Score)
+        coins = coins.filter(coin => {
+            let collected = false;
+
+            // 玩家收集
+            if (Math.abs(coin.position.z - player.position.z) < 2.5 && 
+                Math.abs(coin.position.x - player.position.x) < laneWidth * 0.4) {
+                
+                coinsCollected++;
+                score += 50; 
+                scene.remove(coin); 
+                collected = true;
+            } 
+            
+            // AI 收集 (金幣給予 AI 速度獎勵)
+            else if (Math.abs(coin.position.z - aiPlayer.position.z) < 2.5 && 
+                Math.abs(coin.position.x - aiPlayer.position.x) < laneWidth * 0.4) {
+                
+                // AI 吃到金幣，速度略微提升
+                obstacleSpeed = Math.min(2.0, obstacleSpeed + 0.05); 
+                scene.remove(coin); 
+                collected = true;
+            }
+
+            return !collected; 
+        });
+    }
+
+    // --- UI 更新 ---
+
+    function updateUI() {
+        scoreDisplay.textContent = `分數: ${Math.floor(score)}`;
+        coinDisplay.textContent = `金幣: ${coinsCollected}`;
+
+        // 排名顯示 (Player vs. AI)
+        let rankText = '排名: ?';
+        if (player && aiPlayer) { 
+            // 玩家 Z 軸越小（負值越大），越靠近地平線，代表領先
+            // 玩家 Z=0；AI Z=-5 初始。 Z 越小越領先。
+            if (player.position.z > aiPlayer.position.z) {
+                rankText = '排名: 領先中! (1st)';
+                rankDisplay.classList.remove('bg-red-700');
+                rankDisplay.classList.add('bg-green-700');
+            } else {
+                rankText = '排名: 落後中... (2nd)';
+                rankDisplay.classList.remove('bg-green-700');
+                rankDisplay.classList.add('bg-red-700');
+            }
+        }
+        
+        rankDisplay.innerHTML = `<span class="text-xl">${rankText}</span>`;
+    }
+
+    // --- 遊戲結束 ---
+
+    function gameOver() {
+        isGameOver = true;
+        
+        startScreen.classList.remove('hidden');
+        startScreen.style.pointerEvents = 'auto'; 
+        startButton.textContent = '重新開始';
+        
+        const finalScore = Math.floor(score + coinsCollected * 50);
+
+        let rankText = (player.position.z > aiPlayer.position.z) 
+            ? '恭喜！您成功擊敗了 AI 對手！'
+            : 'AI 略勝一籌，您獲得了第二名！';
+
+        rankingMessage.innerHTML = `
+            <div class="p-4 bg-gray-800 rounded-lg shadow-xl mt-4">
+                <p class="text-3xl font-bold mb-2 text-white">遊戲結束！</p>
+                <p class="text-2xl font-semibold text-purple-400">最終分數: ${finalScore}</p>
+                <p class="text-2xl font-semibold mt-2 text-yellow-400">${rankText}</p>
+                <p class="text-lg text-gray-400 mt-4">您在本次挑戰中，總共收集了 ${coinsCollected} 個金幣。</p>
+            </div>
+        `;
+        rankingMessage.classList.remove('hidden');
+        document.getElementById('instruction-text').classList.add('hidden');
+        document.getElementById('controls-display').classList.add('hidden');
+    }
+
+    // --- 啟動與重新開始 ---
+    
+    startButton.addEventListener('click', () => {
+        startScreen.classList.add('hidden');
+        startScreen.style.pointerEvents = 'none'; 
+        rankingMessage.classList.add('hidden');
+        document.getElementById('instruction-text').classList.remove('hidden');
+        document.getElementById('controls-display').classList.remove('hidden');
+        initGame();
+    });
+    
+    // TWEEN.js 函式庫 (用於平滑移動)
+    window.TWEEN = {
+        _tweens: [],
+        Tween: function(object) {
+            const _object = object;
+            const _valuesStart = {};
+            const _valuesEnd = {};
+            let _duration = 1000;
+            let _easingFunction = TWEEN.Easing.Linear.None;
+            let _startTime = TWEEN.now();
+            let _onCompleteCallback = null;
+            
+            this.to = function(properties, duration) {
+                for (const prop in properties) {
+                    if (object[prop] === undefined && object.rotation?.[prop] === undefined) continue;
+                    
+                    if (prop.includes('.')) {
+                        const [mainProp, subProp] = prop.split('.');
+                        if (object[mainProp] && object[mainProp][subProp] !== undefined) {
+                            _valuesStart[prop] = object[mainProp][subProp];
+                            _valuesEnd[prop] = properties[prop];
+                        }
+                    } else {
+                        _valuesStart[prop] = object[prop];
+                        _valuesEnd[prop] = properties[prop];
+                    }
+                }
+                _duration = duration !== undefined ? duration : 1000; 
+                return this;
+            };
+
+            this.easing = function(easing) {
+                _easingFunction = easing;
+                return this;
+            };
+            
+            this.onComplete = function(callback) {
+                _onCompleteCallback = callback;
+                return this;
+            };
+
+            this.start = function() {
+                _startTime = TWEEN.now();
+                TWEEN._tweens.push(this);
+                return this;
+            };
+
+            this.stop = function() {
+                const i = TWEEN._tweens.indexOf(this);
+                if (i !== -1) {
+                    TWEEN._tweens.splice(i, 1);
+                }
+                return this;
+            };
+
+            this.update = function(time) {
+                let property;
+                let elapsed;
+                
+                if (time < _startTime) return true;
+                
+                elapsed = (time - _startTime) / _duration;
+                elapsed = elapsed > 1 ? 1 : elapsed;
+                
+                const value = _easingFunction(elapsed);
+                
+                for (property in _valuesEnd) {
+                    const start = _valuesStart[property];
+                    const end = _valuesEnd[property];
+
+                    if (end !== undefined) {
+                         // 處理巢狀屬性
+                        if (property.includes('.')) {
+                            const [mainProp, subProp] = property.split('.');
+                            _object[mainProp][subProp] = start + (end - start) * value;
+                        } else {
+                            _object[property] = start + (end - start) * value;
+                        }
+                    }
+                }
+                
+                if (elapsed === 1) {
+                    this.stop();
+                    if (_onCompleteCallback) {
+                        _onCompleteCallback();
+                    }
+                    return false;
+                }
+                
+                return true;
+            };
+        },
+        now: function() {
+            return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        },
+        update: function() {
+            let tweens = TWEEN._tweens.slice(0); 
+            TWEEN._tweens.length = 0; 
+
+            for (let j = 0; j < tweens.length; j++) {
+                if (tweens[j].update(TWEEN.now()) !== false) {
+                    TWEEN._tweens.push(tweens[j]);
+                }
+            }
+        },
+        // 僅使用最簡單的線性與二次方緩動函數
+        Easing: {
+            Linear: { None: function (k) { return k; } },
+            Quadratic: { 
+                In: function (k) { return k * k; },
+                Out: function (k) { return k * (2 - k); }
+            },
+            Quartic: {
+                Out: function (k) { return 1 - (--k * k * k * k); }
+            }
+        }
+    };
+    
+    // 監聽視窗大小變化以保持響應式
+    window.addEventListener('resize', () => {
+        if (!renderer) return;
+
+        const aspectRatio = 0.7; 
+        const width = Math.min(window.innerWidth * 0.9, 800);
+        const height = width / aspectRatio;
+
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+        renderer.setSize(width, height);
+    });
+
+    // 遊戲首次載入時，等待使用者點擊開始
+    window.onload = function() {
+        // 預設設定畫布大小，避免 CLS
+        const width = Math.min(window.innerWidth * 0.9, 800);
+        const height = width / 0.7;
+        canvas.width = width;
+        canvas.height = height;
+        
+        // 首次初始化
+        initGame();
+    }
+</script>
+
+</body>
+</html>
